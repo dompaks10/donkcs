@@ -34,7 +34,7 @@ def calc_step(number):
 
     return step
 
-def gen_grid(number, limdn, limup):
+def gen_grid(number, limdn, limup,lbprice):
     step = calc_step(number)
     nround = count_dec(step) + 1
     # Median value
@@ -45,13 +45,13 @@ def gen_grid(number, limdn, limup):
     vgrid = median - step
     for x in range(3):
         vgrid -= step
-        if vgrid < (0.995*limdn):
+        if (vgrid < (0.99*limdn)):
             grid.append(numround(vgrid, nround))
     # Higher grid
     vgrid = median + step
-    for x in range(3):
+    for x in range(5):
         vgrid += step
-        if vgrid>(1.005*limup):
+        if (vgrid>(1.01*limup)) and (vgrid>lbprice):
             grid.append(numround(vgrid, nround))
 
     return grid
@@ -103,8 +103,8 @@ def count_dec(x):
 
 def calc_size(cap, price):
     msize = cap / price
-    dec = count_dec(msize)
-    size = roundup(msize, dec)
+    dec = count_dec(msize)+1
+    size = round(msize, dec)
     return size
 
 def countdown(t):

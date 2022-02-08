@@ -34,18 +34,19 @@ logger.addHandler(stdout_handler)
 
 # Initialize Class Akun
 class Akun(object):
-    def __init__(self, key, secret, passphrase, quote, cap):
+    def __init__(self, key, secret, passphrase, quote, cap, topn):
         self.key = key
         self.secret = secret
         self.passphrase = passphrase
         self.quote = quote
         self.cap = cap
+        self.topn = topn
         self.histo = pd.DataFrame(columns=[['tlast','hh','vv','ll','qlast','vlast','qq','vv','a']])
         self.connect()
         self.pop_symbols()
         self.pop_history()
         self.get_balance()
-        self.get_top10()
+        #self.get_topn()
         self.gen_lpair()
 
     def connect(self):
@@ -86,7 +87,7 @@ class Akun(object):
         #'isMarginEnabled', 'enableTrading']
 
     def pop_history(self):
-        print('Fetching history...')
+        #print('Fetching history...')
         #check current history
         pdkline = pd.DataFrame()
         histo = pd.read_csv('histo.csv',index_col=0)
@@ -125,6 +126,8 @@ class Akun(object):
             self.histo.to_csv('histo.csv')
         else:
             self.histo = histo
+        #Generate topn
+        self.get_topn(self.topn)
 
     def get_kline(self,symbol,timeframe='1hour'):
         pdkline = pd.DataFrame(self.market.get_kline(symbol=symbol,kline_type=timeframe),columns=['t','o','h','c','l','v','q'])
@@ -177,7 +180,7 @@ class Akun(object):
                     stat = True
         
         if len(self.balance)>0: 
-            self.balance = pd.DataFrame(self.user.get_account_list())     
+            #self.balance = pd.DataFrame(self.user.get_account_list())     
             self.balance.set_index('currency', inplace=True)
             self.balance.drop(delist,inplace=True)
             self.balance['balance'] = pd.to_numeric(self.balance['balance'])
@@ -211,18 +214,20 @@ class Akun(object):
     
     def get_abuys(self, symbol):
         abuy = 0
+        lbprice = 0
         try:
             trades = self.trade.get_fill_list(tradeType='TRADE',symbol=symbol, side='buy')
-            time.sleep(1)
             for t in trades['items']:
                 abuy += float(t['price'])/len(trades['items'])
+                if lbprice == 0:
+                    lbprice = float(t['price'])
         except Exception as e:
             print(f'Error {repr(e)} in get avg buys')
         #{'symbol': 'BTC-USDT', 'tradeId': '61f3a74c2e113d29233fd2fa', 'orderId': '61f399060bb106000113d23d', 
         #'counterOrderId': '61f3a74c19673d000144a651', 'side': 'buy', 'liquidity': 'maker', 'forceTaker': False, 
         #'price': '36600', 'size': '0.00003', 'funds': '1.098', 'fee': '0.001098', 'feeRate': '0.001', 
         #'feeCurrency': 'USDT', 'stop': '', 'tradeType': 'TRADE', 'type': 'limit', 'createdAt': 1643358028000}
-        return abuy
+        return abuy, lbprice
     
     def get_openorders(self, symbol):
         stat = False
@@ -282,10 +287,10 @@ class Akun(object):
                     stat = True
                     return repr(e)
 
-    def get_top10(self):
+    def get_topn(self, top = 10):
         self.histo = pd.read_csv('histo.csv',index_col=0)
         self.histo.sort_values(by=['qlast'],ascending=False, inplace=True)
-        self.ltop10 = self.histo[:10].index.to_list()
+        self.ltopn = self.histo[:top].index.to_list()
     
     def setup_grid(self, symbol):
         price = float(self.tickers.loc[symbol]['last'])
@@ -294,10 +299,10 @@ class Akun(object):
             value = float(self.balance.loc[base]['value'])
         else:
             value = 0
-        limup = self.get_abuys(symbol)
+        limup,lbprice = self.get_abuys(symbol)
         limdn = float(self.histo.loc[symbol]['a'])
-        grid = gen_grid(price,limdn, limup)
-        print(symbol, normalize(value,2), normalize(price,2), normalize(limdn,2), normalize(limup,2), grid)
+        grid = gen_grid(price,limdn, limup, lbprice)
+        print(symbol, normalize(value,2), normalize(price,2), normalize(limdn,2), normalize(limup,2), lbprice, grid)
         return grid
 
     def check_obsorder(self, symbol):
@@ -306,7 +311,7 @@ class Akun(object):
         if len(dorders)>0:
             for order in dorders:
                 oprice = dorders[order]
-                if oprice > 1.05 * price or oprice < 0.95 * price:
+                if (oprice > 1.05 * price) or (oprice < 0.95 * price) or ((oprice<price) and (symbol not in self.ltopn)):
                     stat = self.cancel_order(order)
                     logger.info(stat)
 
@@ -316,8 +321,10 @@ class Akun(object):
         quote = symbol[-4:]
         if base in self.lporto:
             bbase = self.balance.loc[base]['available']
+            vbase = self.balance.loc[base]['value']
         else:
             bbase = 0
+            vbase = 0
         if quote in self.balance.index:
             bquote = self.balance.loc[quote]['available']
         else:
@@ -336,13 +343,13 @@ class Akun(object):
                     else:
                         sbase = 0
                     cbase = sbase/size           
-                    if cbase < 2:
+                    if cbase < 2 and grid > price:
                         size = sbase
                     bmin_size = float(self.symbols.loc[symbol]['baseMinSize'])
-                    bsize = max(size,bmin_size)  
+                    bsize = max(size,bmin_size)
                     bcap = bsize * bgrid
                     bgrid = normalize(bgrid,3)                 
-                    bsize = normalize(bsize)
+                    bsize = normalize(bsize,2)
                     if grid > price:                   
                         if bbase >= bsize:
                             side = 'sell'
@@ -355,7 +362,7 @@ class Akun(object):
                                 strmsg = ' | ' + side +' '+ symbol +' : '+ str(bsize) + '@' + str(bgrid)
                                 logger.info(str(datetime.now())+strmsg)
                     else:
-                        if (bquote >= bcap) and (symbol in self.ltop10):
+                        if (bquote >= bcap) and (symbol in self.ltopn) and (vbase < (self.valtotal_usd/10)):
                             side = 'buy'
                             strmsg = ' | Send : ' + side +' '+ symbol +' : '+ str(bsize) + '@' + str(bgrid)
                             logger.info(str(datetime.now())+strmsg)
@@ -369,13 +376,16 @@ class Akun(object):
         self.lpair = []
         for pair in self.lpaporto:
             self.lpair.append(pair) 
-        for pair in self.ltop10:
+        for pair in self.ltopn:
             if pair not in self.lpair:
                 self.lpair.append(pair)
 
 
 def main(akun):
-    print('Top 10 :',akun.ltop10, len(akun.ltop10))
+    akun.topn = min(maxtopn,akun.topn+1) if akun.valquote > 111 else max(mintopn,akun.topn-1)
+    akun.get_topn(top = akun.topn)
+    akun.gen_lpair()
+    print('Top :',akun.ltopn, len(akun.ltopn))
     for pair in akun.lpair:
         if datetime.now().minute<10:
             akun.pop_history()
@@ -383,14 +393,14 @@ def main(akun):
         lgrid = akun.setup_grid(pair)
         akun.check_obsorder(pair)
         akun.exe_grid(pair,lgrid)
-    val_usd = str(normalize(akun.valquote,2))
-    valtotal = str(normalize(akun.valtotal_usd,2))
+    val_usd = str(normalize(akun.valquote,3))
+    valtotal = str(normalize(akun.valtotal_usd,5))
     strmsg = 'Total Kcsmain = free '+ val_usd + ' USDT of ' + valtotal
     print(strmsg)
     send_tgmsg(bot_message=strmsg)
 
 if __name__ == "__main__":
-    akun = Akun(key=kcs_key, secret=kcs_secret, passphrase=kcs_passphrase, quote=quote, cap=cap)
+    akun = Akun(key=kcs_key, secret=kcs_secret, passphrase=kcs_passphrase, quote=quote, cap=cap, topn=topn)
     while True:
         try:
             print('=' * 50)
